@@ -133,6 +133,142 @@ export default function App() {
     monthCol: "",
   });
 
+  type ExampleKey = "netsuite_ledger" | "trial_balance" | "wide_report";
+
+  function loadExample(which: ExampleKey) {
+    // All examples are anonymized + plausible ERP-like shapes.
+    // We convert them into your internal Row[] (month, business_unit, revenue, cogs, opex)
+  
+    setMappingMode(false);
+  
+    if (which === "netsuite_ledger") {
+      // Ledger export style: Date, Account, Account Name, Department/Cost Center, Debit, Credit
+      const ledger = [
+        { date: "2025-12-05", account: "3000", account_name: "Sales revenue", department: "Finland", debit: 0, credit: 1200000 },
+        { date: "2025-12-12", account: "4000", account_name: "Materials expense", department: "Finland", debit: 720000, credit: 0 },
+        { date: "2025-12-18", account: "5000", account_name: "Salaries", department: "Finland", debit: 310000, credit: 0 },
+  
+        { date: "2025-12-06", account: "3000", account_name: "Sales revenue", department: "Sweden", debit: 0, credit: 800000 },
+        { date: "2025-12-13", account: "4000", account_name: "Materials expense", department: "Sweden", debit: 520000, credit: 0 },
+        { date: "2025-12-20", account: "5000", account_name: "Salaries", department: "Sweden", debit: 210000, credit: 0 },
+  
+        { date: "2026-01-04", account: "3000", account_name: "Sales revenue", department: "Finland", debit: 0, credit: 1280000 },
+        { date: "2026-01-14", account: "4000", account_name: "Materials expense", department: "Finland", debit: 780000, credit: 0 },
+        { date: "2026-01-22", account: "5000", account_name: "Salaries", department: "Finland", debit: 320000, credit: 0 },
+  
+        { date: "2026-01-07", account: "3000", account_name: "Sales revenue", department: "Sweden", debit: 0, credit: 760000 },
+        { date: "2026-01-15", account: "4000", account_name: "Materials expense", department: "Sweden", debit: 510000, credit: 0 },
+        { date: "2026-01-25", account: "5000", account_name: "Salaries", department: "Sweden", debit: 220000, credit: 0 },
+      ];
+  
+      // Classification rule: by account prefix (very common in CoA)
+      const classify = (acct: string): "revenue" | "cogs" | "opex" | null => {
+        const a = String(acct || "");
+        if (a.startsWith("3")) return "revenue";
+        if (a.startsWith("4")) return "cogs";
+        if (a.startsWith("5") || a.startsWith("6")) return "opex";
+        return null;
+      };
+  
+      const agg = new Map<string, Row>(); // key: month|bu
+      for (const tx of ledger) {
+        const month = normalizeMonth(tx.date);
+        const bu = String(tx.department ?? "Total").trim() || "Total";
+        const cat = classify(tx.account);
+        if (!month || !cat) continue;
+  
+        const amount = n(tx.credit) - n(tx.debit); // credit positive, debit negative
+        const key = `${month}|${bu}`;
+        const cur = agg.get(key) || { month, business_unit: bu, revenue: 0, cogs: 0, opex: 0 };
+  
+        if (cat === "revenue") cur.revenue += amount;
+        if (cat === "cogs") cur.cogs += Math.abs(amount); // treat costs as positive for your model
+        if (cat === "opex") cur.opex += Math.abs(amount);
+  
+        agg.set(key, cur);
+      }
+  
+      const parsed = Array.from(agg.values()).sort((a, b) => (a.month + a.business_unit).localeCompare(b.month + b.business_unit));
+      setRows(parsed);
+  
+      const ms = Array.from(new Set(parsed.map(r => r.month))).sort();
+      setSelectedMonth(ms[ms.length - 1] || "");
+      setUploadStatus("Loaded example: NetSuite-style ledger export (debit/credit).");
+      return;
+    }
+  
+    if (which === "trial_balance") {
+      // Trial Balance / P&L lines style: Period, BU, Line (Revenue/COGS/OpEx), Amount
+      const tb = [
+        { period: "2025-12", business_unit: "Finland", line: "Revenue", amount: 1200000 },
+        { period: "2025-12", business_unit: "Finland", line: "COGS", amount: 720000 },
+        { period: "2025-12", business_unit: "Finland", line: "OpEx", amount: 310000 },
+  
+        { period: "2025-12", business_unit: "Sweden", line: "Revenue", amount: 800000 },
+        { period: "2025-12", business_unit: "Sweden", line: "COGS", amount: 520000 },
+        { period: "2025-12", business_unit: "Sweden", line: "OpEx", amount: 210000 },
+  
+        { period: "2026-01", business_unit: "Finland", line: "Revenue", amount: 1280000 },
+        { period: "2026-01", business_unit: "Finland", line: "COGS", amount: 780000 },
+        { period: "2026-01", business_unit: "Finland", line: "OpEx", amount: 320000 },
+  
+        { period: "2026-01", business_unit: "Sweden", line: "Revenue", amount: 760000 },
+        { period: "2026-01", business_unit: "Sweden", line: "COGS", amount: 510000 },
+        { period: "2026-01", business_unit: "Sweden", line: "OpEx", amount: 220000 },
+      ];
+  
+      const agg = new Map<string, Row>();
+      for (const r of tb) {
+        const month = normalizeMonth(r.period);
+        const bu = String(r.business_unit ?? "Total").trim() || "Total";
+        const key = `${month}|${bu}`;
+        const cur = agg.get(key) || { month, business_unit: bu, revenue: 0, cogs: 0, opex: 0 };
+  
+        const cat = normalizeCategory(r.line);
+        if (cat === "revenue") cur.revenue += n(r.amount);
+        if (cat === "cogs") cur.cogs += n(r.amount);
+        if (cat === "opex") cur.opex += n(r.amount);
+  
+        agg.set(key, cur);
+      }
+  
+      const parsed = Array.from(agg.values()).sort((a, b) => (a.month + a.business_unit).localeCompare(b.month + b.business_unit));
+      setRows(parsed);
+  
+      const ms = Array.from(new Set(parsed.map(r => r.month))).sort();
+      setSelectedMonth(ms[ms.length - 1] || "");
+      setUploadStatus("Loaded example: Trial balance / P&L lines export (period + line + amount).");
+      return;
+    }
+  
+    if (which === "wide_report") {
+      // Wide Excel-style report: BU + columns per month
+      const wide = [
+        { business_unit: "Finland", "2025-12": 1200000, "2026-01": 1280000, "2026-02": 1180000 },
+        { business_unit: "Sweden",  "2025-12": 800000,  "2026-01": 760000,  "2026-02": 790000 },
+      ];
+  
+      // For the demo we’ll treat these as revenue-only and derive a plausible cost structure.
+      const months = Object.keys(wide[0]).filter(k => /^\d{4}-\d{2}$/.test(k)).sort();
+  
+      const parsed: Row[] = [];
+      for (const row of wide) {
+        const bu = String(row.business_unit ?? "Unknown").trim() || "Unknown";
+        for (const m of months) {
+          const rev = n((row as any)[m]);
+          const cogs = Math.round(rev * 0.60);
+          const opex = Math.round(rev * 0.25);
+          parsed.push({ month: m, business_unit: bu, revenue: rev, cogs, opex });
+        }
+      }
+  
+      setRows(parsed);
+      setSelectedMonth(months[months.length - 1] || "");
+      setUploadStatus("Loaded example: Wide report export (BU + month columns), auto-pivoted.");
+      return;
+    }
+  }
+  
   function applyMapping() {
     if (!mapping.monthCol) {
       setUploadStatus("Mapping error: please choose a Period/Month column.");
