@@ -4,7 +4,7 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
   BarChart, Bar
 } from "recharts";
-const [uploadStatus, setUploadStatus] = useState<string>("");
+
 
 type Row = {
   month: string;           // YYYY-MM
@@ -62,6 +62,7 @@ export default function App() {
   const [rows, setRows] = useState<Row[]>([]);
   const [company, setCompany] = useState("Radar");
   const [selectedMonth, setSelectedMonth] = useState<string>("");
+  const [uploadStatus, setUploadStatus] = useState<string>("");
 
   const months = useMemo(() => {
     const ms = Array.from(new Set(rows.map(r => r.month))).sort();
@@ -218,6 +219,7 @@ export default function App() {
       const commaCount = (firstLine.match(/,/g) || []).length;
       const semiCount = (firstLine.match(/;/g) || []).length;
       const delimiter = semiCount > commaCount ? ";" : ",";
+      setUploadStatus("Parsing…");
   
       Papa.parse(text, {
         header: true,
@@ -235,7 +237,12 @@ export default function App() {
               budget_ebitda: d.budget_ebitda !== undefined ? n(d.budget_ebitda) : undefined,
             }))
             .filter((r) => r.month && r.business_unit);
-  
+          
+          setUploadStatus(
+            `Parsed ${parsed.length} rows. ${
+              res.errors?.length ? `Errors: ${res.errors.length}` : ""
+            }`
+          ); 
           console.log("CSV parsed rows:", parsed.length, "errors:", res.errors);
           setRows(parsed);
   
@@ -287,7 +294,11 @@ export default function App() {
             <div className="mt-1 text-sm text-slate-600">
               {month ? `Period: ${month}` : "Upload a CSV to begin"}
             </div>
+            {uploadStatus ? (
+            <div className="mt-1 text-xs text-slate-500">{uploadStatus}</div>
+            ) : null}
           </div>
+        
 
           <div className="flex flex-wrap items-center gap-3">
             <select
