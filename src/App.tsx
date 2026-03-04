@@ -138,7 +138,9 @@ export default function App() {
   function loadExample(which: ExampleKey) {
     // All examples are anonymized + plausible ERP-like shapes.
     // We convert them into your internal Row[] (month, business_unit, revenue, cogs, opex)
-  
+    setRawRows([]);
+    setRawCols([]);
+    setMappingMode(false);
     setMappingMode(false);
   
     if (which === "netsuite_ledger") {
@@ -611,8 +613,35 @@ export default function App() {
                 }}
               />
             </label>
-          </div>
-        </div>
+            <div className="relative">
+              <details className="group">
+                <summary className="cursor-pointer list-none rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm shadow-sm">
+                  Simulate ERP export
+                </summary>
+            
+                <div className="absolute right-0 z-10 mt-2 w-72 rounded-2xl bg-white p-2 shadow-lg ring-1 ring-slate-200">
+                  <button
+                    className="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-slate-50"
+                    onClick={() => loadExample("netsuite_ledger")}
+                  >
+                    NetSuite-style ledger (debit/credit)
+                  </button>
+                  <button
+                    className="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-slate-50"
+                    onClick={() => loadExample("trial_balance")}
+                  >
+                    Trial balance / P&L lines (period + line + amount)
+                  </button>
+                  <button
+                    className="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-slate-50"
+                    onClick={() => loadExample("wide_report")}
+                  >
+                    Wide Excel report (BU + month columns)
+                  </button>
+                </div>
+              </details>
+            </div>
+          
 
         {/* Empty state */}
         {rows.length === 0 ? (
