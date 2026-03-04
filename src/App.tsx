@@ -59,7 +59,7 @@ function DeltaPill({ label, deltaPct, deltaAbs }: { label: string; deltaPct: num
 
 export default function App() {
   const [rows, setRows] = useState<Row[]>([]);
-  const [company, setCompany] = useState("CFO Command Center");
+  const [company, setCompany] = useState("Radar");
   const [selectedMonth, setSelectedMonth] = useState<string>("");
 
   const months = useMemo(() => {
