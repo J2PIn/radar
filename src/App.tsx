@@ -188,7 +188,7 @@ export default function App() {
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
-      complete: (res) => {
+      complete: (res: any) => {
         const parsed: Row[] = (res.data as any[]).map(d => ({
           month: String(d.month ?? "").slice(0, 7),
           business_unit: String(d.business_unit ?? "Unknown"),
