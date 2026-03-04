@@ -16,6 +16,59 @@ type Row = {
   budget_ebitda?: number;
 };
 
+type RawRow = Record<string, any>;
+
+type Mapping = {
+  monthCol: string;
+  buCol?: string;          // optional
+  revenueCol?: string;
+  cogsCol?: string;
+  opexCol?: string;
+  amountCol?: string;      // if using single amount column
+  categoryCol?: string;    // if amountCol is used, category indicates rev/cogs/opex
+  // later: accountCol?: string; // for rules-based classification
+};
+
+function normalizeHeader(h: string) {
+  return String(h ?? "")
+    .replace(/^\uFEFF/, "")      // strip BOM
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+}
+
+function detectDelimiterFromHeaderLine(line: string) {
+  const commaCount = (line.match(/,/g) || []).length;
+  const semiCount = (line.match(/;/g) || []).length;
+  const tabCount = (line.match(/\t/g) || []).length;
+  if (tabCount > Math.max(commaCount, semiCount)) return "\t";
+  return semiCount > commaCount ? ";" : ",";
+}
+
+function guessMappingFromHeaders(cols: string[]): Partial<Mapping> {
+  // cols are already normalized
+  const has = (re: RegExp) => cols.find(c => re.test(c));
+
+  return {
+    monthCol: has(/^(month|period|date|posting_date|kausi|kuukausi|pvm)$/) || "",
+    buCol: has(/^(business_unit|businessunit|unit|cost_center|costcentre|department|dept|yksikko|kustannuspaikka)$/),
+    revenueCol: has(/^(revenue|sales|turnover|liikevaihto)$/),
+    cogsCol: has(/^(cogs|cost_of_sales|materials|purchases|ostot|myynnin_kulut)$/),
+    opexCol: has(/^(opex|operating_expenses|sg&a|sga|kulut|hallintokulut|operating_costs)$/),
+    amountCol: has(/^(amount|value|sum|saldo|net|eur|maara|summa)$/),
+    categoryCol: has(/^(category|type|line|laji|tuloslaji)$/),
+  };
+}
+
+function normalizeCategory(x: any): "revenue" | "cogs" | "opex" | null {
+  const s = String(x ?? "").trim().toLowerCase();
+  if (!s) return null;
+  if (/(revenue|sales|turnover|liikevaihto|myynti)/.test(s)) return "revenue";
+  if (/(cogs|cost_of_sales|materials|purchases|ostot|materiaalit)/.test(s)) return "cogs";
+  if (/(opex|expense|expenses|kulut|hallinto|marketing|salary|palkat|vuokra)/.test(s)) return "opex";
+  return null;
+}
+
 function n(x: any): number {
   if (x === null || x === undefined) return 0;
   if (typeof x === "number") return Number.isFinite(x) ? x : 0;
@@ -73,7 +126,73 @@ export default function App() {
   const [company, setCompany] = useState("Radar");
   const [selectedMonth, setSelectedMonth] = useState<string>("");
   const [uploadStatus, setUploadStatus] = useState<string>("");
+  const [rawRows, setRawRows] = useState<RawRow[]>([]);
+  const [rawCols, setRawCols] = useState<string[]>([]);
+  const [mappingMode, setMappingMode] = useState(false);
+  const [mapping, setMapping] = useState<Mapping>({
+    monthCol: "",
+  });
 
+  function applyMapping() {
+    if (!mapping.monthCol) {
+      setUploadStatus("Mapping error: please choose a Period/Month column.");
+      return;
+    }
+    if (!rawRows.length) {
+      setUploadStatus("No raw rows loaded.");
+      return;
+    }
+  
+    const out: Row[] = [];
+  
+    for (const d of rawRows) {
+      const month = normalizeMonth(d[mapping.monthCol]);
+  
+      const bu =
+        mapping.buCol ? String(d[mapping.buCol] ?? "Unknown").trim() : "Total";
+  
+      // Mode A: direct columns (revenue/cogs/opex)
+      const hasDirect =
+        mapping.revenueCol || mapping.cogsCol || mapping.opexCol;
+  
+      if (hasDirect) {
+        out.push({
+          month,
+          business_unit: bu || "Unknown",
+          revenue: mapping.revenueCol ? n(d[mapping.revenueCol]) : 0,
+          cogs: mapping.cogsCol ? n(d[mapping.cogsCol]) : 0,
+          opex: mapping.opexCol ? n(d[mapping.opexCol]) : 0,
+        });
+        continue;
+      }
+  
+      // Mode B: single amount + category
+      if (mapping.amountCol && mapping.categoryCol) {
+        const amt = n(d[mapping.amountCol]);
+        const cat = normalizeCategory(d[mapping.categoryCol]);
+  
+        if (!cat) continue;
+  
+        out.push({
+          month,
+          business_unit: bu || "Unknown",
+          revenue: cat === "revenue" ? amt : 0,
+          cogs: cat === "cogs" ? amt : 0,
+          opex: cat === "opex" ? amt : 0,
+        });
+        continue;
+      }
+    }
+  
+    const parsed = out.filter(r => r.month && r.business_unit);
+  
+    setUploadStatus(`Mapped import: ${parsed.length} rows.`);
+    setMappingMode(false);
+    setRows(parsed);
+  
+    const ms = Array.from(new Set(parsed.map(r => r.month))).sort();
+    setSelectedMonth(ms[ms.length - 1] || "");
+  }
   const months = useMemo(() => {
     const ms = Array.from(new Set(rows.map(r => r.month))).sort();
     return ms;
@@ -223,51 +342,73 @@ export default function App() {
 }
 
   function onUpload(file: File) {
-    // Read as text to detect delimiter
-    file.text().then((text) => {
-      const firstLine = text.split(/\r?\n/)[0] ?? "";
-      const commaCount = (firstLine.match(/,/g) || []).length;
-      const semiCount = (firstLine.match(/;/g) || []).length;
-      const delimiter = semiCount > commaCount ? ";" : ",";
-      setUploadStatus("Parsing…");
-      const cleanedText = text.replace(/^\uFEFF/, "");
-  
-      Papa.parse(cleanedText, {
-        transformHeader: (h: string) => h.trim().toLowerCase(),
-        header: true,
-        skipEmptyLines: true,
-        delimiter,
-        complete: (res: any) => {
-          const parsed: Row[] = (res.data as any[])
-            .map((d) => ({
-              month: normalizeMonth(d.month),
-              business_unit: String(d.business_unit ?? d.businessunit ?? d.bu ?? "Unknown").trim(),
-              revenue: n(d.revenue),
-              cogs: n(d.cogs),
-              opex: n(d.opex),
-              budget_revenue: d.budget_revenue !== undefined ? n(d.budget_revenue) : undefined,
-              budget_ebitda: d.budget_ebitda !== undefined ? n(d.budget_ebitda) : undefined,
-            }))
-            .filter((r) => r.month && r.business_unit);
-          
-          setUploadStatus(
-            `Parsed ${parsed.length} rows. ${
-              res.errors?.length ? `Errors: ${res.errors.length}` : ""
-            }`
-          ); 
-          console.log("CSV parsed rows:", parsed.length, "errors:", res.errors);
+  file.text().then((text) => {
+    const firstLine = text.split(/\r?\n/)[0] ?? "";
+    const delimiter = detectDelimiterFromHeaderLine(firstLine);
+    setUploadStatus("Parsing…");
+
+    const cleanedText = text.replace(/^\uFEFF/, "");
+
+    Papa.parse(cleanedText, {
+      header: true,
+      skipEmptyLines: true,
+      delimiter,
+      transformHeader: normalizeHeader,
+      complete: (res: any) => {
+        const data: RawRow[] = (res.data as any[]) || [];
+        const cols = Object.keys(data[0] || {});
+        setRawRows(data);
+        setRawCols(cols);
+
+        // --- Your existing "auto" parse (slightly adjusted to normalized headers) ---
+        const parsed: Row[] = data
+          .map((d) => ({
+            month: normalizeMonth(d.month),
+            business_unit: String(d.business_unit ?? d.businessunit ?? d.bu ?? "Unknown").trim(),
+            revenue: n(d.revenue),
+            cogs: n(d.cogs),
+            opex: n(d.opex),
+            budget_revenue: d.budget_revenue !== undefined ? n(d.budget_revenue) : undefined,
+            budget_ebitda: d.budget_ebitda !== undefined ? n(d.budget_ebitda) : undefined,
+          }))
+          .filter((r) => r.month && r.business_unit);
+
+        setUploadStatus(
+          `Parsed ${parsed.length} rows. ${res.errors?.length ? `Errors: ${res.errors.length}` : ""}`
+        );
+
+        if (parsed.length > 0) {
+          setMappingMode(false);
           setRows(parsed);
-  
           const ms = Array.from(new Set(parsed.map((r) => r.month))).sort();
           setSelectedMonth(ms[ms.length - 1] || "");
-        },
-        error: (err: any) => {
-          console.error("PapaParse error:", err);
-        },
-      });
-    });
-  }
+          return;
+        }
 
+        // --- fallback: open mapping mode with a guess ---
+        const guess = guessMappingFromHeaders(cols);
+        setMapping({
+          monthCol: guess.monthCol || "",
+          buCol: guess.buCol,
+          revenueCol: guess.revenueCol,
+          cogsCol: guess.cogsCol,
+          opexCol: guess.opexCol,
+          amountCol: guess.amountCol,
+          categoryCol: guess.categoryCol,
+        });
+
+        setMappingMode(true);
+        setUploadStatus(
+          `Couldn’t auto-map columns. Map them below to import (detected ${data.length} rows).`
+        );
+      },
+      error: (err: any) => {
+        console.error("PapaParse error:", err);
+        setUploadStatus("Upload failed: could not parse file.");
+      },
+    });
+  });
+}
   const kpis = useMemo(() => {
     if (!current) return null;
     const gp = current.grossProfit;
@@ -355,6 +496,147 @@ export default function App() {
 2026-01,Finland,1280000,780000,320000,1300000,150000
 2026-01,Sweden,760000,510000,220000,800000,95000`}
             </pre>
+          </div>
+        ) : null}
+
+        {mappingMode ? (
+          <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-sm font-semibold">Import mapping</div>
+                <div className="text-xs text-slate-500">
+                  Select which columns represent period, business unit, and values. Preview updates instantly.
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  onClick={() => setMappingMode(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white"
+                  onClick={applyMapping}
+                >
+                  Apply mapping
+                </button>
+              </div>
+            </div>
+        
+            <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <div className="rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200">
+                <div className="text-xs uppercase tracking-wide text-slate-500">Required</div>
+        
+                <label className="mt-3 block text-xs text-slate-600">Period / Month column</label>
+                <select
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  value={mapping.monthCol}
+                  onChange={(e) => setMapping(m => ({ ...m, monthCol: e.target.value }))}
+                >
+                  <option value="">— Select —</option>
+                  {rawCols.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+        
+                <label className="mt-3 block text-xs text-slate-600">Business unit column (optional)</label>
+                <select
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  value={mapping.buCol ?? ""}
+                  onChange={(e) => setMapping(m => ({ ...m, buCol: e.target.value || undefined }))}
+                >
+                  <option value="">(none) → Total</option>
+                  {rawCols.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+        
+              <div className="rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200">
+                <div className="text-xs uppercase tracking-wide text-slate-500">Mode A: Direct P&L columns</div>
+        
+                <label className="mt-3 block text-xs text-slate-600">Revenue column</label>
+                <select
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  value={mapping.revenueCol ?? ""}
+                  onChange={(e) => setMapping(m => ({ ...m, revenueCol: e.target.value || undefined }))}
+                >
+                  <option value="">— none —</option>
+                  {rawCols.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+        
+                <label className="mt-3 block text-xs text-slate-600">COGS column</label>
+                <select
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  value={mapping.cogsCol ?? ""}
+                  onChange={(e) => setMapping(m => ({ ...m, cogsCol: e.target.value || undefined }))}
+                >
+                  <option value="">— none —</option>
+                  {rawCols.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+        
+                <label className="mt-3 block text-xs text-slate-600">OpEx column</label>
+                <select
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  value={mapping.opexCol ?? ""}
+                  onChange={(e) => setMapping(m => ({ ...m, opexCol: e.target.value || undefined }))}
+                >
+                  <option value="">— none —</option>
+                  {rawCols.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+        
+              <div className="rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200">
+                <div className="text-xs uppercase tracking-wide text-slate-500">Mode B: Amount + Category</div>
+        
+                <label className="mt-3 block text-xs text-slate-600">Amount column</label>
+                <select
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  value={mapping.amountCol ?? ""}
+                  onChange={(e) => setMapping(m => ({ ...m, amountCol: e.target.value || undefined }))}
+                >
+                  <option value="">— none —</option>
+                  {rawCols.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+        
+                <label className="mt-3 block text-xs text-slate-600">Category column (rev/cogs/opex)</label>
+                <select
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                  value={mapping.categoryCol ?? ""}
+                  onChange={(e) => setMapping(m => ({ ...m, categoryCol: e.target.value || undefined }))}
+                >
+                  <option value="">— none —</option>
+                  {rawCols.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+        
+                <div className="mt-3 text-xs text-slate-500">
+                  Tip: If the export is a ledger, you can map “Amount” + “Account name” later and auto-classify.
+                </div>
+              </div>
+            </div>
+        
+            <div className="mt-5">
+              <div className="text-xs uppercase tracking-wide text-slate-500">Preview (first 10 rows)</div>
+              <div className="mt-2 overflow-auto rounded-xl ring-1 ring-slate-200">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-slate-100 text-slate-600">
+                    <tr>
+                      {rawCols.slice(0, 8).map(c => (
+                        <th key={c} className="px-3 py-2 text-left">{c}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white">
+                    {rawRows.slice(0, 10).map((r, i) => (
+                      <tr key={i} className="border-t border-slate-100">
+                        {rawCols.slice(0, 8).map(c => (
+                          <td key={c} className="px-3 py-2 whitespace-nowrap text-slate-700">
+                            {String(r[c] ?? "")}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         ) : null}
 
