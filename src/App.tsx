@@ -17,8 +17,18 @@ type Row = {
 };
 
 function n(x: any): number {
-  const v = typeof x === "string" ? x.replace(/[, ]/g, "") : x;
-  const num = Number(v);
+  if (x === null || x === undefined) return 0;
+  if (typeof x === "number") return Number.isFinite(x) ? x : 0;
+
+  const s = String(x)
+    .trim()
+    .replace(/\u00A0/g, " ")     // NBSP -> space
+    .replace(/[€]/g, "")         // strip €
+    .replace(/\s+/g, "")         // remove spaces as thousand sep
+    .replace(/\./g, "")          // remove dot thousand sep (common)
+    .replace(/,/g, ".");         // comma decimal -> dot
+
+  const num = Number(s);
   return Number.isFinite(num) ? num : 0;
 }
 
@@ -220,8 +230,10 @@ export default function App() {
       const semiCount = (firstLine.match(/;/g) || []).length;
       const delimiter = semiCount > commaCount ? ";" : ",";
       setUploadStatus("Parsing…");
+      const cleanedText = text.replace(/^\uFEFF/, "");
   
-      Papa.parse(text, {
+      Papa.parse(cleanedText, {
+        transformHeader: (h: string) => h.trim().toLowerCase(),
         header: true,
         skipEmptyLines: true,
         delimiter,
@@ -229,7 +241,7 @@ export default function App() {
           const parsed: Row[] = (res.data as any[])
             .map((d) => ({
               month: normalizeMonth(d.month),
-              business_unit: String(d.business_unit ?? d.businessUnit ?? d.bu ?? "Unknown").trim(),
+              business_unit: String(d.business_unit ?? d.businessunit ?? d.bu ?? "Unknown").trim(),
               revenue: n(d.revenue),
               cogs: n(d.cogs),
               opex: n(d.opex),
