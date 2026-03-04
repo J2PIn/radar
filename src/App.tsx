@@ -4,6 +4,7 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
   BarChart, Bar
 } from "recharts";
+const [uploadStatus, setUploadStatus] = useState<string>("");
 
 type Row = {
   month: string;           // YYYY-MM
@@ -184,24 +185,67 @@ export default function App() {
     };
   }, [current, prev, ly, topBus]);
 
+  function normalizeMonth(raw: string) {
+  // Accept: 2026-01, 2026–01, 2026/01, 01/2026
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+
+  const cleaned = s
+    .replace(/[–—]/g, "-")     // en/em dash -> hyphen
+    .replace(/\./g, "-")
+    .replace(/\//g, "-")
+    .replace(/\s+/g, "");
+
+  // If format is MM-YYYY or M-YYYY, flip
+  const mmyyyy = cleaned.match(/^(\d{1,2})-(\d{4})$/);
+  if (mmyyyy) {
+    const mm = String(mmyyyy[1]).padStart(2, "0");
+    return `${mmyyyy[2]}-${mm}`;
+  }
+
+  // If starts with YYYY-MM-..., keep first 7 chars after normalization
+  const yyyymm = cleaned.match(/^(\d{4})-(\d{2})/);
+  if (yyyymm) return `${yyyymm[1]}-${yyyymm[2]}`;
+
+  // Last resort: first 7 chars
+  return cleaned.slice(0, 7);
+}
+
   function onUpload(file: File) {
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (res: any) => {
-        const parsed: Row[] = (res.data as any[]).map(d => ({
-          month: String(d.month ?? "").slice(0, 7),
-          business_unit: String(d.business_unit ?? "Unknown"),
-          revenue: n(d.revenue),
-          cogs: n(d.cogs),
-          opex: n(d.opex),
-          budget_revenue: d.budget_revenue !== undefined ? n(d.budget_revenue) : undefined,
-          budget_ebitda: d.budget_ebitda !== undefined ? n(d.budget_ebitda) : undefined,
-        })).filter(r => r.month && r.business_unit);
-        setRows(parsed);
-        const ms = Array.from(new Set(parsed.map(r => r.month))).sort();
-        setSelectedMonth(ms[ms.length - 1] || "");
-      }
+    // Read as text to detect delimiter
+    file.text().then((text) => {
+      const firstLine = text.split(/\r?\n/)[0] ?? "";
+      const commaCount = (firstLine.match(/,/g) || []).length;
+      const semiCount = (firstLine.match(/;/g) || []).length;
+      const delimiter = semiCount > commaCount ? ";" : ",";
+  
+      Papa.parse(text, {
+        header: true,
+        skipEmptyLines: true,
+        delimiter,
+        complete: (res: any) => {
+          const parsed: Row[] = (res.data as any[])
+            .map((d) => ({
+              month: normalizeMonth(d.month),
+              business_unit: String(d.business_unit ?? d.businessUnit ?? d.bu ?? "Unknown").trim(),
+              revenue: n(d.revenue),
+              cogs: n(d.cogs),
+              opex: n(d.opex),
+              budget_revenue: d.budget_revenue !== undefined ? n(d.budget_revenue) : undefined,
+              budget_ebitda: d.budget_ebitda !== undefined ? n(d.budget_ebitda) : undefined,
+            }))
+            .filter((r) => r.month && r.business_unit);
+  
+          console.log("CSV parsed rows:", parsed.length, "errors:", res.errors);
+          setRows(parsed);
+  
+          const ms = Array.from(new Set(parsed.map((r) => r.month))).sort();
+          setSelectedMonth(ms[ms.length - 1] || "");
+        },
+        error: (err: any) => {
+          console.error("PapaParse error:", err);
+        },
+      });
     });
   }
 
