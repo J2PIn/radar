@@ -641,6 +641,8 @@ export default function App() {
                 </div>
               </details>
             </div>
+          </div>
+        </div>
           
 
         {/* Empty state */}
